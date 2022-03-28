@@ -56,7 +56,7 @@ tqdm.pandas()
 
 # TODO: convert to pl DataModules
 class UnprocessedDataset(Dataset):
-    def __init__(self, audio_directory, alignment_directory=None, max_entries=None, dvector=False, cache=True, blur=False, treshold=0.5):
+    def __init__(self, audio_directory, alignment_directory=None, max_entries=None, dvector=False, cache=True, blur=False, treshold=1):
         super().__init__()
 
         self.dir = audio_directory

@@ -5,9 +5,12 @@ from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import LearningRateMonitor
 import os
 from dataset import UnprocessedDataset, ProcessedDataset
+import torch
 
-#import torch.multiprocessing
-#torch.multiprocessing.set_sharing_strategy('file_system')
+import torch.multiprocessing
+torch.multiprocessing.set_sharing_strategy('file_system')
+
+torch.autograd.set_detect_anomaly(True)
 
 config = configparser.ConfigParser()
 config.read("config.ini")

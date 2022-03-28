@@ -9,6 +9,7 @@ import multiprocessing
 import wandb
 from synthesiser import Synthesiser
 from postnet import PostNet
+from postnetgan import MelDiscriminator, MelGenerator, PostNetDiscriminator, PostNetGenerator
 
 from dataset import ProcessedDataset, UnprocessedDataset
 
@@ -25,11 +26,12 @@ config.read("config.ini")
 
 
 class FastSpeech2Loss(nn.Module):
-    def __init__(self, postnet, blur):
+    def __init__(self, postnet, postnet_type, blur):
         super().__init__()
         self.mse_loss = nn.MSELoss()
         self.l1_loss = nn.L1Loss()
         self.postnet = postnet
+        self.postnet_type = postnet_type
         self.blur = blur
 
     @staticmethod
@@ -74,10 +76,22 @@ class FastSpeech2Loss(nn.Module):
             )
 
         if self.postnet:
-            postnet_loss = FastSpeech2Loss.get_loss(
-                postnet_pred, mel_tgt-mel_blur, self.l1_loss, tgt_mask, unsqueeze=True
-            )
+            if self.postnet_type == 'conv':
+                postnet_loss = FastSpeech2Loss.get_loss(
+                    postnet_pred, mel_tgt-mel_blur, self.l1_loss, tgt_mask, unsqueeze=True
+                )
+            elif self.postnet_type == 'gan':
+                real_output = torch.stack([p['real_output'] for p in postnet_pred])
+                real_label =  torch.stack([p['real_label'] for p in postnet_pred])
+                fake_output_d = torch.stack([p['fake_output_d'] for p in postnet_pred])
+                fake_label =  torch.stack([p['fake_label'] for p in postnet_pred])
+                fake_output_g = torch.stack([p['fake_output_g'] for p in postnet_pred])
+                d_loss_real = self.mse_loss(real_output, real_label)
+                d_loss_fake = self.mse_loss(fake_output_d, fake_label)
+                d_loss = (d_loss_real + d_loss_fake) / 2
+                g_loss = self.mse_loss(fake_output_g, real_label)
 
+                
         if config["dataset"].get("variance_level") == "frame":
             pitch_energy_mask = tgt_mask
         elif config["dataset"].get("variance_level") == "phoneme":
@@ -97,7 +111,10 @@ class FastSpeech2Loss(nn.Module):
         total_loss = mel_loss + pitch_loss + energy_loss + duration_loss
 
         if self.postnet:
-            total_loss = total_loss + postnet_loss
+            if self.postnet_type == 'conv':
+                total_loss = total_loss + postnet_loss
+            elif self.postnet_type == 'gan':
+                total_loss = total_loss + d_loss + g_loss
 
         result = [
             total_loss,
@@ -108,7 +125,11 @@ class FastSpeech2Loss(nn.Module):
         ]
 
         if self.postnet:
-            result.append(postnet_loss) 
+            if self.postnet_type == 'conv':
+                result.append(postnet_loss) 
+            elif self.postnet_type == 'gan':
+                result.append(d_loss) 
+                result.append(g_loss)
         
         return result
 
@@ -165,6 +186,7 @@ class FastSpeech2(pl.LightningModule):
         self.max_lr = config["train"].getfloat("max_lr")
         mel_channels = config["model"].getint("mel_channels")
         self.has_postnet = config["model"].getboolean("postnet")
+        self.postnet_type = config["model"].get("postnet_type").lower()
 
         # modules
 
@@ -205,13 +227,18 @@ class FastSpeech2(pl.LightningModule):
         self.linear = nn.Linear(decoder_hidden, mel_channels,)
 
         if self.has_postnet:
-            self.postnet = PostNet()
+            if self.postnet_type == "gan":
+                assert self.has_blur
+                self.postnet_disc = ConvMelDiscriminator()
+                self.postnet_gen = ConvMelGenerator()
+            elif self.postnet_type == "conv":
+                self.postnet = PostNet()
 
-        self.loss = FastSpeech2Loss(postnet=self.has_postnet, blur=self.has_blur)
+        self.loss = FastSpeech2Loss(postnet=self.has_postnet, postnet_type=self.postnet_type, blur=self.has_blur)
 
         self.is_wandb_init = False
 
-    def forward(self, phones, speakers, pitch=None, energy=None, duration=None):
+    def forward(self, phones, speakers, pitch=None, energy=None, duration=None, mel=None):
         phones = phones.to(self.device)
         speakers = speakers.to(self.device)
         if pitch is not None:
@@ -248,8 +275,70 @@ class FastSpeech2(pl.LightningModule):
         output = self.linear(output)
 
         if self.has_postnet:
-            postnet_output = self.postnet(output)
-            final_output = postnet_output + output
+            if self.postnet_type == 'conv':
+                postnet_output = self.postnet(output)
+                final_output = postnet_output + output
+            elif self.postnet_type == 'gan':
+                # batch_size = output.shape[0]
+                # postnet_output = []
+                # for i in range(batch_size):
+                #     conditional_item = output[i].detach().clone()
+
+                #     out_len = conditional_item.shape[0]//20
+                #     out_mod = conditional_item.shape[0]%20
+
+                #     if out_mod != 0:
+                #         batch_size = out_len + 1
+                #     else:
+                #         batch_size = out_len
+
+                #     real_label = torch.full((batch_size, 1), 1, dtype=output.dtype).to(self.device)
+                #     fake_label = torch.full((batch_size, 1), 0, dtype=output.dtype).to(self.device)
+
+                #     #noise = torch.randn([batch_size, 100]).to(self.device)
+
+                #     targets = []
+                #     conditionals = []
+                #     for j in range(out_len):
+                #         if mel is not None:
+                #             targets.append(mel[i][20*j:20*(j+1)].unsqueeze(0))
+                #         conditionals.append(conditional_item[20*j:20*(j+1)].unsqueeze(0))
+                #     if out_mod != 0:
+                #         if mel is not None:
+                #             targets.append(mel[i][-20:].unsqueeze(0))
+                #         conditionals.append(conditional_item[-20:].unsqueeze(0))
+
+                #     conditionals = torch.stack(conditionals)
+
+                #     if mel is not None:
+                #         targets = torch.stack(targets)
+                #         real_output = self.postnet_disc(targets) #conditionals)
+                #     else:
+                #         real_output = None
+
+                #     # Train with fake.
+                #     fake = conditionals.reshape(conditionals.size(0), 20, 80) + self.postnet_gen(conditionals) # noise, cond
+                #     fake_output_d = self.postnet_disc(fake.detach()) #conditionals)
+                #     # update G network
+                #     fake_output_g = self.postnet_disc(fake) #conditionals)
+                #     final_output = output.detach().clone()
+                #     for j in range(out_len):
+                #         final_output[i][20*j:20*(j+1)] += fake.detach().clone().squeeze()[j]
+                #     if out_mod != 0:
+                #         final_output[i][-20+out_mod:] += fake.detach().clone().squeeze()[-1][-20+out_mod:]
+
+                #     if real_output is not None:
+                #         real_output_clone = real_output.clone()
+                #     else:
+                #         real_output_clone = None
+
+                #     postnet_output.append({
+                #         'real_label': real_label.clone(),
+                #         'fake_label': fake_label.clone(),
+                #         'real_output': real_output_clone,
+                #         'fake_output_d': fake_output_d.clone(),
+                #         'fake_output_g': fake_output_g.clone(),
+                #     })
         else:
             postnet_output = None
             final_output = output
@@ -275,6 +364,7 @@ class FastSpeech2(pl.LightningModule):
             batch["pitch"],
             batch["energy"],
             batch["duration"],
+            batch["mel"],
         )
         if not self.has_blur:
             truth = (
@@ -300,7 +390,11 @@ class FastSpeech2(pl.LightningModule):
             "train/duration_loss": loss[4].item(),
         }
         if self.has_postnet:
-            log_dict['train/postnet_loss'] = loss[5].item()
+            if self.postnet_type == 'conv':
+                log_dict['train/postnet_loss'] = loss[5].item()
+            elif self.postnet_type == 'gan':
+                log_dict['train/postnet_dis'] = loss[5].item()
+                log_dict['train/postnet_gen'] = loss[6].item()
         self.log_dict(
             log_dict,
             batch_size=self.batch_size,
@@ -315,6 +409,7 @@ class FastSpeech2(pl.LightningModule):
             batch["pitch"],
             batch["energy"],
             batch["duration"],
+            batch["mel"],
         )
         if not self.has_blur:
             truth = (
@@ -340,7 +435,11 @@ class FastSpeech2(pl.LightningModule):
             "eval/duration_loss": loss[4].item(),
         }
         if self.has_postnet:
-            log_dict['eval/postnet_loss'] = loss[5].item()
+            if self.postnet_type == 'conv':
+                log_dict['eval/postnet_loss'] = loss[5].item()
+            elif self.postnet_type == 'gan':
+                log_dict['eval/postnet_dis'] = loss[5].item()
+                log_dict['eval/postnet_gen'] = loss[6].item()
         self.log_dict(
             log_dict,
             batch_size=self.batch_size,
@@ -353,22 +452,22 @@ class FastSpeech2(pl.LightningModule):
             old_src_mask = src_mask
             old_tgt_mask = tgt_mask
             preds, src_mask, tgt_mask = self(batch["phones"], batch["speaker"])
-            mels, pitchs, energys, _, durations, postnet_mels, final_mels = [pred.cpu() if pred is not None else None for pred in preds]
+            mels, pitchs, energys, _, durations, postnet_mels, final_mels = preds
             log_data = []
             for i in range(len(mels)):
                 if i >= 10:
                     break
-                mel = final_mels[i][~tgt_mask[i]]
-                true_mel = batch["mel"][i][~old_tgt_mask[i]]
+                mel = final_mels[i][~tgt_mask[i]].cpu()
+                true_mel = batch["mel"][i][~old_tgt_mask[i]].cpu()
                 if len(mel) == 0:
                     print('predicted 0 length output, this is normal at the beginning of training')
                     continue
                 pred_fig = self.valid_ds.plot(
                     {
                         "mel": mel,
-                        "pitch": pitchs[i],
-                        "energy": energys[i],
-                        "duration": durations[i][~src_mask[i]],
+                        "pitch": pitchs[i].cpu(),
+                        "energy": energys[i].cpu(),
+                        "duration": durations[i][~src_mask[i]].cpu(),
                         "phones": batch["phones"][i]
                     }
                 )
