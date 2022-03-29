@@ -42,12 +42,12 @@ class MelGenerator(nn.Module):
 
     def _initialize_weights(self) -> None:
         for m in self.modules():
-            if isinstance(m, nn.Conv2d):
+            if isinstance(m, nn.Conv1d):
                 nn.init.kaiming_normal_(m.weight)
                 m.weight.data *= 0.1
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.BatchNorm2d):
+            elif isinstance(m, nn.BatchNorm1d):
                 nn.init.normal_(m.weight, 1.0, 0.02)
                 m.weight.data *= 0.1
                 if m.bias is not None:
@@ -59,74 +59,206 @@ class MelGenerator(nn.Module):
                     nn.init.constant_(m.bias, 0)
 
 
-class PostNetGenerator(nn.Module):
-    """
-    PostNet: Five 1-d convolution with 512 channels and kernel size 5
-    """
-
-    def __init__(
-        self,
-        n_mel_channels=80,
-        postnet_embedding_dim=256,
-        postnet_kernel_size=5,
-        postnet_n_convolutions=3,
-    ):
-
-        super(PostNetGenerator, self).__init__()
-        self.convolutions = nn.ModuleList()
-
-        self.convolutions.append(
-            nn.Sequential(
-                ConvNorm(
-                    n_mel_channels,
-                    postnet_embedding_dim,
-                    kernel_size=postnet_kernel_size,
-                    stride=1,
-                    padding=int((postnet_kernel_size - 1) / 2),
-                    dilation=1,
-                    w_init_gain="tanh",
-                ),
-                nn.BatchNorm1d(postnet_embedding_dim),
-            )
+class ConvMelGenerator(nn.Module):
+    def __init__(self, ngf = 512, nc = 80, postnet_kernel_size=5):
+        super(ConvMelGenerator, self).__init__()
+        postnet_kernel_size = 5
+        self.main = nn.Sequential(
+            # input is Z, going into a convolution
+            nn.ConvTranspose1d(
+                nc+1,
+                ngf,
+                kernel_size=postnet_kernel_size,
+                stride=1,
+                padding=int((postnet_kernel_size - 1) / 2),
+                dilation=1,
+                bias=False
+            ),
+            nn.BatchNorm1d(ngf),
+            nn.ReLU(True),
+            # state size. (ngf*8) x 4 x 4
+            nn.ConvTranspose1d(
+                ngf,
+                ngf,
+                kernel_size=postnet_kernel_size,
+                stride=1,
+                padding=int((postnet_kernel_size - 1) / 2),
+                dilation=1,
+                bias=False
+            ),
+            nn.BatchNorm1d(ngf),
+            nn.ReLU(True),
+            # state size. (ngf*4) x 8 x 8
+            nn.ConvTranspose1d(
+                ngf,
+                ngf,
+                kernel_size=postnet_kernel_size,
+                stride=1,
+                padding=int((postnet_kernel_size - 1) / 2),
+                dilation=1,
+                bias=False
+            ),
+            nn.BatchNorm1d(ngf),
+            nn.ReLU(True),
+            # state size. (ngf*2) x 16 x 16
+            nn.ConvTranspose1d(
+                ngf,
+                ngf,
+                kernel_size=postnet_kernel_size,
+                stride=1,
+                padding=int((postnet_kernel_size - 1) / 2),
+                dilation=1,
+                bias=False
+            ),
+            nn.BatchNorm1d(ngf),
+            nn.ReLU(True),
+            # state size. (ngf) x 32 x 32
+            nn.ConvTranspose1d(
+                ngf,
+                nc,
+                kernel_size=postnet_kernel_size,
+                stride=1,
+                padding=int((postnet_kernel_size - 1) / 2),
+                dilation=1,
+                bias=False
+            ),
+            nn.Tanh()
+            # state size. (nc) x 64 x 64
         )
 
-        for i in range(1, postnet_n_convolutions - 1):
-            self.convolutions.append(
-                nn.Sequential(
-                    ConvNorm(
-                        postnet_embedding_dim,
-                        postnet_embedding_dim,
-                        kernel_size=postnet_kernel_size,
-                        stride=1,
-                        padding=int((postnet_kernel_size - 1) / 2),
-                        dilation=1,
-                        w_init_gain="tanh",
-                    ),
-                    nn.BatchNorm1d(postnet_embedding_dim),
-                )
-            )
+        # Initializing all neural network weights.
+        self._initialize_weights()
 
-        self.convolutions.append(
-            nn.Sequential(
-                ConvNorm(
-                    postnet_embedding_dim,
-                    n_mel_channels,
-                    kernel_size=postnet_kernel_size,
-                    stride=1,
-                    padding=int((postnet_kernel_size - 1) / 2),
-                    dilation=1,
-                    w_init_gain="linear",
-                ),
-                nn.BatchNorm1d(n_mel_channels),
-            )
+    def _initialize_weights(self) -> None:
+        for m in self.modules():
+            if isinstance(m, nn.Conv1d):
+                nn.init.normal_(m.weight.data, 0.0, 0.02)
+            elif isinstance(m, nn.BatchNorm1d):
+                nn.init.normal_(m.weight, 1.0, 0.02)
+                m.weight.data *= 0.1
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight)
+                m.weight.data *= 0.1
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+
+    def forward(self, inputs, conditional):
+        #print(inputs.shape, conditional.shape)
+        x = torch.cat([
+            inputs.squeeze(),
+            conditional.squeeze(),
+        ], dim=-1)
+        #print(x.shape)
+        x = x.contiguous().transpose(1, 2)
+        out = self.main(x)
+        out = out.contiguous().transpose(1, 2)
+        return out
+
+class Conv2dMelGenerator(nn.Module):
+    def __init__(self, ngf = 64, nc = 1):
+        super(Conv2dMelGenerator, self).__init__()
+        self.main = nn.Sequential(
+            # 2 x 80 x 80
+            nn.Conv2d(
+                nc+1,
+                ngf,
+                kernel_size=4,
+                stride=2,
+                padding=1,
+                bias=False
+            ),
+            nn.BatchNorm2d(ngf),
+            nn.ReLU(True),
+            # 64 x 40 x 40
+            nn.Conv2d(
+                ngf,
+                ngf * 2,
+                kernel_size=4,
+                stride=2,
+                padding=1,
+                dilation=1,
+                bias=False
+            ),
+            nn.BatchNorm2d(ngf * 2),
+            nn.ReLU(True),
+            # 128 x 20 x 20
+            nn.Conv2d(
+                ngf * 2,
+                ngf * 4,
+                kernel_size=4,
+                stride=2,
+                padding=1,
+                dilation=1,
+                bias=False
+            ),
+            nn.BatchNorm2d(ngf * 4),
+            nn.ReLU(True),
+            # 256 x 10 x 10
+            nn.ConvTranspose2d(
+                ngf * 4,
+                ngf * 2,
+                kernel_size=4,
+                stride=2,
+                padding=1,
+                dilation=1,
+                bias=False
+            ),
+            nn.BatchNorm2d(ngf * 2),
+            nn.ReLU(True),
+            # 128 x 20 x 20
+            nn.ConvTranspose2d(
+                ngf * 2,
+                ngf,
+                kernel_size=4,
+                stride=2,
+                padding=1,
+                dilation=1,
+                bias=False
+            ),
+            nn.BatchNorm2d(ngf),
+            nn.ReLU(True),
+            # 64 x 40 x 40
+            nn.ConvTranspose2d(
+                ngf,
+                nc,
+                kernel_size=4,
+                stride=2,
+                padding=1,
+                dilation=1,
+                bias=False
+            ),
+            nn.Tanh()
+            # 1 x 80 x 80
         )
 
-    def forward(self, x):
-        x = x.contiguous().transpose(1, 2)
+        # Initializing all neural network weights.
+        self._initialize_weights()
 
-        for i in range(len(self.convolutions) - 1):
-            x = F.dropout(torch.tanh(self.convolutions[i](x)), 0.1, self.training)
-        x = self.convolutions[-1](x)
+    def _initialize_weights(self) -> None:
+        for m in self.modules():
+            if isinstance(m, nn.Conv1d):
+                nn.init.normal_(m.weight.data, 0.0, 0.02)
+            elif isinstance(m, nn.BatchNorm1d):
+                nn.init.normal_(m.weight, 1.0, 0.02)
+                m.weight.data *= 0.1
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight)
+                m.weight.data *= 0.1
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
 
-        x = x.contiguous().transpose(1, 2)
-        return x
+    def forward(self, inputs, conditional):
+        #print('gen')
+        #print(inputs.shape, conditional.shape)
+        x = torch.cat([
+            inputs,
+            conditional,
+        ], dim=1)
+        #print(x.shape)
+        out = self.main(x)
+        #print(out.shape)
+        return out

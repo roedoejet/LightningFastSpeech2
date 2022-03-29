@@ -7,9 +7,10 @@ import torch
 import configparser
 import multiprocessing
 import wandb
+import torchvision.transforms as VT
 from synthesiser import Synthesiser
 from postnet import PostNet
-from postnetgan import MelDiscriminator, MelGenerator, PostNetDiscriminator, PostNetGenerator
+from postnetgan import MelDiscriminator, MelGenerator, Conv2dMelDiscriminator, Conv2dMelGenerator
 
 from dataset import ProcessedDataset, UnprocessedDataset
 
@@ -81,14 +82,17 @@ class FastSpeech2Loss(nn.Module):
                     postnet_pred, mel_tgt-mel_blur, self.l1_loss, tgt_mask, unsqueeze=True
                 )
             elif self.postnet_type == 'gan':
-                real_output = torch.stack([p['real_output'] for p in postnet_pred])
-                real_label =  torch.stack([p['real_label'] for p in postnet_pred])
-                fake_output_d = torch.stack([p['fake_output_d'] for p in postnet_pred])
-                fake_label =  torch.stack([p['fake_label'] for p in postnet_pred])
-                fake_output_g = torch.stack([p['fake_output_g'] for p in postnet_pred])
+                real_output = torch.cat([p['real_output'] for p in postnet_pred], dim=0)
+                real_label =  torch.cat([p['real_label'] for p in postnet_pred], dim=0)
+                fake_output_d = torch.cat([p['fake_output_d'] for p in postnet_pred], dim=0)
+                fake_label =  torch.cat([p['fake_label'] for p in postnet_pred], dim=0)
+                fake_output_g = torch.cat([p['fake_output_g'] for p in postnet_pred], dim=0)
+                #print(real_output.shape, real_label.shape)
                 d_loss_real = self.mse_loss(real_output, real_label)
+                #print(fake_output_d.shape, fake_label.shape)
                 d_loss_fake = self.mse_loss(fake_output_d, fake_label)
                 d_loss = (d_loss_real + d_loss_fake) / 2
+                #print(fake_output_g.shape, real_label.shape)
                 g_loss = self.mse_loss(fake_output_g, real_label)
 
                 
@@ -229,8 +233,8 @@ class FastSpeech2(pl.LightningModule):
         if self.has_postnet:
             if self.postnet_type == "gan":
                 assert self.has_blur
-                self.postnet_disc = ConvMelDiscriminator()
-                self.postnet_gen = ConvMelGenerator()
+                self.postnet_disc = Conv2dMelDiscriminator()
+                self.postnet_gen = Conv2dMelGenerator()
             elif self.postnet_type == "conv":
                 self.postnet = PostNet()
 
@@ -279,66 +283,68 @@ class FastSpeech2(pl.LightningModule):
                 postnet_output = self.postnet(output)
                 final_output = postnet_output + output
             elif self.postnet_type == 'gan':
-                # batch_size = output.shape[0]
-                # postnet_output = []
-                # for i in range(batch_size):
-                #     conditional_item = output[i].detach().clone()
+                batch_size = output.shape[0]
+                postnet_output = []
+                final_output = output.detach().clone()
+                width = 80
+                for i in range(batch_size):
+                    conditional_item = output[i].detach().clone()
 
-                #     out_len = conditional_item.shape[0]//20
-                #     out_mod = conditional_item.shape[0]%20
+                    out_len = conditional_item.shape[0]//width
+                    out_mod = conditional_item.shape[0]%width
 
-                #     if out_mod != 0:
-                #         batch_size = out_len + 1
-                #     else:
-                #         batch_size = out_len
+                    if out_mod != 0:
+                        batch_size = out_len + 1
+                    else:
+                        batch_size = out_len
 
-                #     real_label = torch.full((batch_size, 1), 1, dtype=output.dtype).to(self.device)
-                #     fake_label = torch.full((batch_size, 1), 0, dtype=output.dtype).to(self.device)
+                    real_label = torch.full((batch_size, 1), 1, dtype=output.dtype).to(self.device)
+                    fake_label = torch.full((batch_size, 1), 0, dtype=output.dtype).to(self.device)
 
-                #     #noise = torch.randn([batch_size, 100]).to(self.device)
+                    noise = torch.randn([batch_size, 1, width, 80]).to(self.device)
 
-                #     targets = []
-                #     conditionals = []
-                #     for j in range(out_len):
-                #         if mel is not None:
-                #             targets.append(mel[i][20*j:20*(j+1)].unsqueeze(0))
-                #         conditionals.append(conditional_item[20*j:20*(j+1)].unsqueeze(0))
-                #     if out_mod != 0:
-                #         if mel is not None:
-                #             targets.append(mel[i][-20:].unsqueeze(0))
-                #         conditionals.append(conditional_item[-20:].unsqueeze(0))
+                    targets = []
+                    conditionals = []
+                    for j in range(out_len):
+                        if mel is not None:
+                            targets.append(mel[i][width*j:width*(j+1)].unsqueeze(0))
+                        conditionals.append(conditional_item[width*j:width*(j+1)].unsqueeze(0))
+                    if out_mod != 0:
+                        if mel is not None:
+                            targets.append(mel[i][-width:].unsqueeze(0))
+                        conditionals.append(conditional_item[-width:].unsqueeze(0))
 
-                #     conditionals = torch.stack(conditionals)
+                    conditionals = torch.stack(conditionals)
+                    conditionals = conditionals / torch.max(torch.abs(conditionals))
 
-                #     if mel is not None:
-                #         targets = torch.stack(targets)
-                #         real_output = self.postnet_disc(targets) #conditionals)
-                #     else:
-                #         real_output = None
+                    if mel is not None:
+                        targets = torch.stack(targets)
+                        real_output = self.postnet_disc(targets, conditionals)
+                    else:
+                        real_output = None
 
-                #     # Train with fake.
-                #     fake = conditionals.reshape(conditionals.size(0), 20, 80) + self.postnet_gen(conditionals) # noise, cond
-                #     fake_output_d = self.postnet_disc(fake.detach()) #conditionals)
-                #     # update G network
-                #     fake_output_g = self.postnet_disc(fake) #conditionals)
-                #     final_output = output.detach().clone()
-                #     for j in range(out_len):
-                #         final_output[i][20*j:20*(j+1)] += fake.detach().clone().squeeze()[j]
-                #     if out_mod != 0:
-                #         final_output[i][-20+out_mod:] += fake.detach().clone().squeeze()[-1][-20+out_mod:]
+                    # Train with fake.
+                    fake = self.postnet_gen(noise, conditionals) # conditionals + 
+                    fake_output_d = self.postnet_disc(fake.detach(), conditionals)
+                    # update G network
+                    fake_output_g = self.postnet_disc(fake, conditionals)
+                    for j in range(out_len):
+                        final_output[i][width*j:width*(j+1)] = fake.detach().clone().squeeze()[j]
+                    if out_mod != 0:
+                        final_output[i][-out_mod:] = fake.detach().clone().squeeze()[-1][-out_mod:]
 
-                #     if real_output is not None:
-                #         real_output_clone = real_output.clone()
-                #     else:
-                #         real_output_clone = None
+                    if real_output is not None:
+                        real_output_clone = real_output.clone().squeeze().unsqueeze(-1)
+                    else:
+                        real_output_clone = None
 
-                #     postnet_output.append({
-                #         'real_label': real_label.clone(),
-                #         'fake_label': fake_label.clone(),
-                #         'real_output': real_output_clone,
-                #         'fake_output_d': fake_output_d.clone(),
-                #         'fake_output_g': fake_output_g.clone(),
-                #     })
+                    postnet_output.append({
+                        'real_label': real_label.clone(),
+                        'fake_label': fake_label.clone(),
+                        'real_output': real_output_clone,
+                        'fake_output_d': fake_output_d.clone().squeeze().unsqueeze(-1),
+                        'fake_output_g': fake_output_g.clone().squeeze().unsqueeze(-1),
+                    })
         else:
             postnet_output = None
             final_output = output
