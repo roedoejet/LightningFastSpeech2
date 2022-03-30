@@ -157,7 +157,7 @@ class Conv2dMelDiscriminator(nn.Module):
                 bias=False
             ),
             nn.BatchNorm2d(ngf),
-            nn.ReLU(True),
+            nn.LeakyReLU(0.2, inplace=True),
             # 64 x 40 x 40
             nn.Conv2d(
                 ngf,
@@ -169,7 +169,7 @@ class Conv2dMelDiscriminator(nn.Module):
                 bias=False
             ),
             nn.BatchNorm2d(ngf * 2),
-            nn.ReLU(True),
+            nn.LeakyReLU(0.2, inplace=True),
             # 128 x 20 x 20
             nn.Conv2d(
                 ngf * 2,
@@ -181,22 +181,22 @@ class Conv2dMelDiscriminator(nn.Module):
                 bias=False
             ),
             nn.BatchNorm2d(ngf * 4),
-            nn.ReLU(True),
+            nn.LeakyReLU(0.2, inplace=True),
             # 256 x 10 x 10
             nn.Conv2d(
                 ngf * 4,
-                ngf * 6,
+                ngf * 4,
                 kernel_size=5,
                 stride=2,
                 padding=2,
                 dilation=1,
                 bias=False
             ),
-            nn.BatchNorm2d(ngf * 6),
-            nn.ReLU(True),
+            nn.BatchNorm2d(ngf * 4),
+            nn.LeakyReLU(0.2, inplace=True),
             # 384 x 5 x 5
             nn.Conv2d(
-                ngf * 6,
+                ngf * 4,
                 nc,
                 kernel_size=5,
                 stride=1,

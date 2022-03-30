@@ -161,77 +161,32 @@ class Conv2dMelGenerator(nn.Module):
         super(Conv2dMelGenerator, self).__init__()
         self.main = nn.Sequential(
             # 2 x 80 x 80
-            nn.Conv2d(
-                nc+1,
-                ngf,
-                kernel_size=4,
-                stride=2,
-                padding=1,
-                bias=False
-            ),
+            nn.Conv2d(2, ngf, 4, 2, 1, bias=False),
             nn.BatchNorm2d(ngf),
-            nn.ReLU(True),
+            nn.LeakyReLU(0.2, inplace=True),
             # 64 x 40 x 40
-            nn.Conv2d(
-                ngf,
-                ngf * 2,
-                kernel_size=4,
-                stride=2,
-                padding=1,
-                dilation=1,
-                bias=False
-            ),
-            nn.BatchNorm2d(ngf * 2),
-            nn.ReLU(True),
-            # 128 x 20 x 20
-            nn.Conv2d(
-                ngf * 2,
-                ngf * 4,
-                kernel_size=4,
-                stride=2,
-                padding=1,
-                dilation=1,
-                bias=False
-            ),
+            nn.Conv2d(ngf, ngf * 4, 4, 2, 1, bias=False),
             nn.BatchNorm2d(ngf * 4),
-            nn.ReLU(True),
-            # 256 x 10 x 10
-            nn.ConvTranspose2d(
-                ngf * 4,
-                ngf * 2,
-                kernel_size=4,
-                stride=2,
-                padding=1,
-                dilation=1,
-                bias=False
-            ),
-            nn.BatchNorm2d(ngf * 2),
-            nn.ReLU(True),
+            nn.LeakyReLU(0.2, inplace=True),
             # 128 x 20 x 20
-            nn.ConvTranspose2d(
-                ngf * 2,
-                ngf,
-                kernel_size=4,
-                stride=2,
-                padding=1,
-                dilation=1,
-                bias=False
-            ),
-            nn.BatchNorm2d(ngf),
-            nn.ReLU(True),
-            # 64 x 40 x 40
-            nn.ConvTranspose2d(
-                ngf,
-                nc,
-                kernel_size=4,
-                stride=2,
-                padding=1,
-                dilation=1,
-                bias=False
-            ),
+            nn.Upsample(scale_factor=2, mode='bilinear'),
+            #nn.ReflectionPad2d(1),
+            nn.Conv2d(ngf * 4, ngf * 4, 3, 1, 1, bias=False),
+            nn.BatchNorm2d(ngf * 4),
+            nn.LeakyReLU(0.2, inplace=True),
+            # 256 x 40 x 40
+            nn.Upsample(scale_factor=2, mode='bilinear'),
+            #nn.ReflectionPad2d(1),
+            nn.Conv2d(ngf * 4, nc, 3, 1, 1, bias=False),
             nn.Tanh()
             # 1 x 80 x 80
         )
+            # nn.ConvTranspose2d(ngf * 4, ngf * 4, 4, 2, 1, bias=False),
+            # nn.BatchNorm2d(ngf * 4),
+            # nn.ReLU(True),
+            # # 256 x 40 x 40
+            # nn.ConvTranspose2d(ngf * 4, nc, 4, 2, 1, bias=False),
+            # nn.Tanh()
 
         # Initializing all neural network weights.
         self._initialize_weights()

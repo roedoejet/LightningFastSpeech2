@@ -240,6 +240,18 @@ class FastSpeech2(pl.LightningModule):
 
         self.loss = FastSpeech2Loss(postnet=self.has_postnet, postnet_type=self.postnet_type, blur=self.has_blur)
 
+
+        for model in [
+            self.linear,
+            self.decoder,
+            self.variance_adaptor,
+            self.encoder,
+            self.phone_embedding,
+        ]:
+            for param in model.parameters():
+                param.requires_grad = False
+
+
         self.is_wandb_init = False
 
     def forward(self, phones, speakers, pitch=None, energy=None, duration=None, mel=None):
@@ -317,21 +329,26 @@ class FastSpeech2(pl.LightningModule):
                     conditionals = torch.stack(conditionals)
                     conditionals = conditionals / torch.max(torch.abs(conditionals))
 
+                    #resize = VT.Resize((64, 64))
+
+                    resized_cond = conditionals
+
                     if mel is not None:
                         targets = torch.stack(targets)
+                        targets = targets / torch.max(torch.abs(targets))
                         real_output = self.postnet_disc(targets, conditionals)
                     else:
                         real_output = None
 
                     # Train with fake.
-                    fake = self.postnet_gen(noise, conditionals) # conditionals + 
+                    fake = conditionals + self.postnet_gen(noise, resized_cond) # conditionals + 
                     fake_output_d = self.postnet_disc(fake.detach(), conditionals)
                     # update G network
                     fake_output_g = self.postnet_disc(fake, conditionals)
                     for j in range(out_len):
-                        final_output[i][width*j:width*(j+1)] = fake.detach().clone().squeeze()[j]
+                        final_output[i][width*j:width*(j+1)] += fake.detach().clone().squeeze()[j]
                     if out_mod != 0:
-                        final_output[i][-out_mod:] = fake.detach().clone().squeeze()[-1][-out_mod:]
+                        final_output[i][-out_mod:] += fake.detach().clone().squeeze()[-1][-out_mod:]
 
                     if real_output is not None:
                         real_output_clone = real_output.clone().squeeze().unsqueeze(-1)
