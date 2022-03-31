@@ -91,7 +91,7 @@ class FastSpeech2Loss(nn.Module):
                 d_loss_real = self.mse_loss(real_output, real_label)
                 #print(fake_output_d.shape, fake_label.shape)
                 d_loss_fake = self.mse_loss(fake_output_d, fake_label)
-                d_loss = (d_loss_real + d_loss_fake) / 2
+                d_loss = (d_loss_real + d_loss_fake)
                 #print(fake_output_g.shape, real_label.shape)
                 g_loss = self.mse_loss(fake_output_g, real_label)
 
@@ -132,7 +132,8 @@ class FastSpeech2Loss(nn.Module):
             if self.postnet_type == 'conv':
                 result.append(postnet_loss) 
             elif self.postnet_type == 'gan':
-                result.append(d_loss) 
+                result.append(d_loss_real) 
+                result.append(d_loss_fake) 
                 result.append(g_loss)
         
         return result
@@ -341,14 +342,14 @@ class FastSpeech2(pl.LightningModule):
                         real_output = None
 
                     # Train with fake.
-                    fake = conditionals + self.postnet_gen(noise, resized_cond) # conditionals + 
+                    fake = self.postnet_gen(noise, resized_cond) # conditionals + 
                     fake_output_d = self.postnet_disc(fake.detach(), conditionals)
                     # update G network
                     fake_output_g = self.postnet_disc(fake, conditionals)
                     for j in range(out_len):
-                        final_output[i][width*j:width*(j+1)] += fake.detach().clone().squeeze()[j]
+                        final_output[i][width*j:width*(j+1)] = fake.detach().clone().squeeze()[j]
                     if out_mod != 0:
-                        final_output[i][-out_mod:] += fake.detach().clone().squeeze()[-1][-out_mod:]
+                        final_output[i][-out_mod:] = fake.detach().clone().squeeze()[-1][-out_mod:]
 
                     if real_output is not None:
                         real_output_clone = real_output.clone().squeeze().unsqueeze(-1)
@@ -416,8 +417,9 @@ class FastSpeech2(pl.LightningModule):
             if self.postnet_type == 'conv':
                 log_dict['train/postnet_loss'] = loss[5].item()
             elif self.postnet_type == 'gan':
-                log_dict['train/postnet_dis'] = loss[5].item()
-                log_dict['train/postnet_gen'] = loss[6].item()
+                log_dict['train/postnet_dis_real'] = loss[5].item()
+                log_dict['train/postnet_dis_fake'] = loss[6].item()
+                log_dict['train/postnet_gen'] = loss[7].item()
         self.log_dict(
             log_dict,
             batch_size=self.batch_size,
@@ -461,8 +463,9 @@ class FastSpeech2(pl.LightningModule):
             if self.postnet_type == 'conv':
                 log_dict['eval/postnet_loss'] = loss[5].item()
             elif self.postnet_type == 'gan':
-                log_dict['eval/postnet_dis'] = loss[5].item()
-                log_dict['eval/postnet_gen'] = loss[6].item()
+                log_dict['eval/postnet_dis_real'] = loss[5].item()
+                log_dict['eval/postnet_dis_fake'] = loss[6].item()
+                log_dict['eval/postnet_gen'] = loss[7].item()
         self.log_dict(
             log_dict,
             batch_size=self.batch_size,
