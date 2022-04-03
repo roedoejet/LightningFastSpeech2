@@ -1,3 +1,4 @@
+from turtle import forward
 import torch
 import torch.nn as nn
 
@@ -142,79 +143,91 @@ class ConvMelDiscriminator(nn.Module):
         out = self.main(x).squeeze(-1)
         return out
 
-class Conv2dMelDiscriminator(nn.Module):
-    def __init__(self, ngf=64, nc=1):
-        super(Conv2dMelDiscriminator, self).__init__()
+class StartDisBlock(nn.Module):
+    def __init__(self, in_c, out_c):
+        super(StartDisBlock, self).__init__()
+
         self.main = nn.Sequential(
-            # 1 x 80 x 80
-            nn.Conv2d(
-                nc + 1,
-                ngf,
-                kernel_size=5,
-                stride=2,
-                padding=2,
-                dilation=1,
-                bias=False
-            ),
-            nn.BatchNorm2d(ngf),
+            nn.Conv2d(in_c,out_c,3,2,1,bias=True),
+            nn.GroupNorm(1, out_c),
+            nn.LeakyReLU(0.2, inplace=True)
+        )
+
+    def forward(self, inputs, conditional):
+        x = torch.cat([
+            inputs,
+            conditional,
+        ], dim=1)
+        out = self.main(x)
+        return out
+
+class DisBlock(nn.Module):
+    def __init__(self, in_c, out_c):
+        super(DisBlock, self).__init__()
+
+        self.main = nn.Sequential(
+            nn.Conv2d(in_c,out_c,3,2,1,bias=True),
+            nn.GroupNorm(1, out_c),
+            nn.LeakyReLU(0.2, inplace=True)
+        )
+    
+    def forward(self, activations, conditional, inputs):
+        x = torch.cat([
+            activations,
+            conditional,
+            inputs
+        ], dim=1)
+        out = self.main(x)
+        return out
+
+class EndDisBlock(nn.Module):
+    def __init__(self, in_c, out_c):
+        super(EndDisBlock, self).__init__()
+
+        self.main = nn.Sequential(
+            nn.Conv2d(in_c,out_c,3,1,1,bias=True),
+            nn.GroupNorm(1, out_c),
             nn.LeakyReLU(0.2, inplace=True),
-            # 64 x 40 x 40
-            nn.Conv2d(
-                ngf,
-                ngf * 2,
-                kernel_size=5,
-                stride=2,
-                padding=2,
-                dilation=1,
-                bias=False
-            ),
-            nn.BatchNorm2d(ngf * 2),
+            nn.Conv2d(out_c,out_c,4,2,0,bias=True),
+            nn.GroupNorm(1, out_c),
             nn.LeakyReLU(0.2, inplace=True),
-            # 128 x 20 x 20
-            nn.Conv2d(
-                ngf * 2,
-                ngf * 4,
-                kernel_size=5,
-                stride=2,
-                padding=2,
-                dilation=1,
-                bias=False
-            ),
-            nn.BatchNorm2d(ngf * 4),
-            nn.LeakyReLU(0.2, inplace=True),
-            # 256 x 10 x 10
-            nn.Conv2d(
-                ngf * 4,
-                ngf * 4,
-                kernel_size=5,
-                stride=2,
-                padding=2,
-                dilation=1,
-                bias=False
-            ),
-            nn.BatchNorm2d(ngf * 4),
-            nn.LeakyReLU(0.2, inplace=True),
-            # 384 x 5 x 5
-            nn.Conv2d(
-                ngf * 4,
-                nc,
-                kernel_size=5,
-                stride=1,
-                padding=0,
-                dilation=1,
-                bias=False
-            ),
+        )
+
+        self.fc = nn.Sequential(
+            nn.Linear(out_c, 1),
             nn.Sigmoid()
         )
+    
+    def forward(self, activations, conditional, inputs):
+        x = torch.cat([
+            activations,
+            conditional,
+            inputs
+        ], dim=1)
+        out = self.main(x)
+        out = self.fc(out.squeeze())
+        return out
+
+class Conv2dMelDiscriminator(nn.Module):
+    def __init__(self, ndf=32, nc=1):
+        super(Conv2dMelDiscriminator, self).__init__()
+
+        self.blocks = nn.ModuleList([
+            StartDisBlock(nc * 2, ndf), # -> ndf x 40 x 40
+            DisBlock(ndf + nc * 2, ndf * 2), # -> ndf*2 x 20 x 20
+            DisBlock(ndf * 2 + nc * 2, ndf * 4), # -> ndf*4 x 10 x 10
+            DisBlock(ndf * 4 + nc * 2, ndf * 8), # -> ndf*8 x 5 x 5
+            EndDisBlock(ndf * 8 + nc * 2, ndf * 8), # -> 1 x 1 x 1
+        ])
 
         # Initializing all neural network weights.
         self._initialize_weights()
 
     def _initialize_weights(self) -> None:
         for m in self.modules():
-            if isinstance(m, nn.Conv1d):
+            if isinstance(m, nn.Conv2d):
                 nn.init.normal_(m.weight.data, 0.0, 0.02)
-            elif isinstance(m, nn.BatchNorm1d):
+            elif isinstance(m, nn.GroupNorm):
                 nn.init.normal_(m.weight, 1.0, 0.02)
                 m.weight.data *= 0.1
                 if m.bias is not None:
@@ -225,14 +238,11 @@ class Conv2dMelDiscriminator(nn.Module):
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
 
-    def forward(self, inputs, conditional):
-        #print('disc')
-        #print(inputs.shape, conditional.shape)
-        x = torch.cat([
-            inputs,
-            conditional,
-        ], dim=1)
-        #print(x.shape)
-        out = self.main(x)
-        #print(out.shape)
+    def forward(self, images, conditionals):
+        for i, layer in enumerate(self.blocks):
+            # print('ic', images[i].shape, conditionals[i].shape)
+            if i == 0:
+                out = layer(images[i], conditionals[i])
+            else:
+                out = layer(out, images[i], conditionals[i])
         return out

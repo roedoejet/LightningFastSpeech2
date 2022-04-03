@@ -47,7 +47,7 @@ if __name__ == "__main__":
         logger=wandb_logger,
         accumulate_grad_batches=config["train"].getint("gradient_accumulation"),
         callbacks=[lr_monitor],
-        gradient_clip_val=config["train"].getint("gradient_clipping"),
+        #gradient_clip_val=config["train"].getint("gradient_clipping"),
         gpus=gpus,
         strategy=strategy,
     )

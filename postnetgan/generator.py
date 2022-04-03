@@ -1,3 +1,4 @@
+from doctest import OutputChecker
 import torch
 import torch.nn as nn
 
@@ -131,7 +132,7 @@ class ConvMelGenerator(nn.Module):
 
     def _initialize_weights(self) -> None:
         for m in self.modules():
-            if isinstance(m, nn.Conv1d):
+            if isinstance(m, nn.Conv2d):
                 nn.init.normal_(m.weight.data, 0.0, 0.02)
             elif isinstance(m, nn.BatchNorm1d):
                 nn.init.normal_(m.weight, 1.0, 0.02)
@@ -156,46 +157,92 @@ class ConvMelGenerator(nn.Module):
         out = out.contiguous().transpose(1, 2)
         return out
 
-class Conv2dMelGenerator(nn.Module):
-    def __init__(self, ngf = 64, nc = 1):
-        super(Conv2dMelGenerator, self).__init__()
+class StartGenBlock(nn.Module):
+    def __init__(self, in_c, out_c, nc=1):
+        super(StartGenBlock, self).__init__()
+
         self.main = nn.Sequential(
-            # 2 x 80 x 80
-            nn.Conv2d(2, ngf, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(ngf),
-            nn.LeakyReLU(0.2, inplace=True),
-            # 64 x 40 x 40
-            nn.Conv2d(ngf, ngf * 4, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(ngf * 4),
-            nn.LeakyReLU(0.2, inplace=True),
-            # 128 x 20 x 20
-            nn.Upsample(scale_factor=2, mode='bilinear'),
-            #nn.ReflectionPad2d(1),
-            nn.Conv2d(ngf * 4, ngf * 4, 3, 1, 1, bias=False),
-            nn.BatchNorm2d(ngf * 4),
-            nn.LeakyReLU(0.2, inplace=True),
-            # 256 x 40 x 40
-            nn.Upsample(scale_factor=2, mode='bilinear'),
-            #nn.ReflectionPad2d(1),
-            nn.Conv2d(ngf * 4, nc, 3, 1, 1, bias=False),
-            nn.Tanh()
-            # 1 x 80 x 80
+            nn.ConvTranspose2d(in_c,out_c,5,1,0,bias=True),
+            #nn.GroupNorm(1, out_c),
+            nn.ReLU(True),
         )
-            # nn.ConvTranspose2d(ngf * 4, ngf * 4, 4, 2, 1, bias=False),
-            # nn.BatchNorm2d(ngf * 4),
-            # nn.ReLU(True),
-            # # 256 x 40 x 40
-            # nn.ConvTranspose2d(ngf * 4, nc, 4, 2, 1, bias=False),
-            # nn.Tanh()
+
+        self.second = nn.Sequential(
+            nn.Conv2d(out_c + 1,out_c,3,1,1,bias=True),
+            #nn.GroupNorm(1, out_c),
+            nn.LeakyReLU(0.2, inplace=True),
+        )
+
+        self.out_conv = nn.Sequential(
+            nn.Conv2d(out_c+1,nc,1,1,0,bias=True),
+            nn.Tanh(),
+        )
+
+    def forward(self, inputs, conditional):
+        activations = self.main(inputs)
+        x = torch.cat([
+            activations,
+            conditional,
+        ], dim=1)
+        out_act = self.second(x)
+        out_img = self.out_conv(torch.cat([
+            out_act,
+            conditional
+        ], dim=1))
+        return out_act, out_img
+
+class GenBlock(nn.Module):
+    def __init__(self, in_c, out_c, nc=1, scale=2):
+        super(GenBlock, self).__init__()
+
+        self.upsample = nn.Upsample(scale_factor=scale, mode='bilinear')
+
+        self.main = nn.Sequential(
+            nn.Conv2d(in_c,out_c,3,1,1,bias=True),
+            #nn.GroupNorm(1, out_c),
+            nn.LeakyReLU(0.2, inplace=True),
+        )
+        self.out_conv = nn.Sequential(
+            nn.Conv2d(out_c+1,nc,1,1,0,bias=True),
+            nn.Tanh(),
+        )
+    
+    def forward(self, activations, conditional):
+        activations = self.upsample(activations)
+
+        x = torch.cat([
+            activations,
+            conditional,
+        ], dim=1)
+
+        out_act = self.main(x)
+
+        out_img = self.out_conv(torch.cat([
+            out_act,
+            conditional
+        ], dim=1))
+        return out_act, out_img
+
+class Conv2dMelGenerator(nn.Module):
+    def __init__(self, ngf=32, noise=100, nc=1):
+        super(Conv2dMelGenerator, self).__init__()
+        
+        self.blocks = nn.ModuleList([
+            StartGenBlock(noise, ngf * 8), # -> ndf * 8 x 5 x 5
+            GenBlock(ngf * 8 + nc, ngf * 4), # -> ndf * 4 x 10 x 10
+            GenBlock(ngf * 4 + nc, ngf * 2), # -> ndf *2 x 20 x 20
+            GenBlock(ngf * 2 + nc, ngf), # -> ndf x 40 x 40
+            GenBlock(ngf + nc, 1), # -> 1 x 80 x 80
+        ])
 
         # Initializing all neural network weights.
         self._initialize_weights()
 
     def _initialize_weights(self) -> None:
         for m in self.modules():
-            if isinstance(m, nn.Conv1d):
+            if isinstance(m, nn.Conv2d):
                 nn.init.normal_(m.weight.data, 0.0, 0.02)
-            elif isinstance(m, nn.BatchNorm1d):
+            elif isinstance(m, nn.GroupNorm):
                 nn.init.normal_(m.weight, 1.0, 0.02)
                 m.weight.data *= 0.1
                 if m.bias is not None:
@@ -206,14 +253,15 @@ class Conv2dMelGenerator(nn.Module):
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
 
-    def forward(self, inputs, conditional):
-        #print('gen')
-        #print(inputs.shape, conditional.shape)
-        x = torch.cat([
-            inputs,
-            conditional,
-        ], dim=1)
-        #print(x.shape)
-        out = self.main(x)
-        #print(out.shape)
-        return out
+    def forward(self, latent, conditionals):
+        imgs = []
+        for i, layer in enumerate(self.blocks):
+            if i == 0:
+                out, out_img = layer(latent, conditionals[::-1][i])
+            else:
+                out, out_img = layer(out, conditionals[::-1][i])
+            imgs.append(out_img)
+        imgs.reverse()
+        # for i in imgs:
+        #     print('img', i.shape)
+        return imgs

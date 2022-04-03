@@ -373,6 +373,8 @@ class ProcessedDataset(Dataset):
                     'energy_max': np.max([s['energy_max'] for s in p_stats]),
                     'energy_mean': np.mean([s['energy_mean'] for s in p_stats]),
                     'energy_std': np.mean([s['energy_std'] for s in p_stats]),
+                    'mel_mean': np.mean([s['mel_mean'] for s in p_stats]),
+                    'mel_std': np.mean([s['mel_std'] for s in p_stats]),
                 }
 
                 with open(os.path.join(self.ds.dir, 'stats.json'), 'w') as outfile:
@@ -414,6 +416,8 @@ class ProcessedDataset(Dataset):
             'energy_max':np.max(x['energy']).astype(float),
             'energy_mean':np.mean(x['energy']).astype(float),
             'energy_std':np.std(x['energy']).astype(float),
+            'mel_mean':np.mean(x['mel']).astype(float),
+            'mel_std':np.std(x['mel']).astype(float),
         }
 
     def create_phone2id(self):
@@ -572,7 +576,7 @@ if __name__ == "__main__":
         unprocessed_ds=train_ud,
         split="train",
         phone_vec=False,
-        recompute_stats=False,
+        recompute_stats=True,
     )
     valid_ds = ProcessedDataset(
         unprocessed_ds=valid_ud,
