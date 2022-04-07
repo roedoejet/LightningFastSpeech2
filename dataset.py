@@ -375,6 +375,8 @@ class ProcessedDataset(Dataset):
                     'energy_std': np.mean([s['energy_std'] for s in p_stats]),
                     'mel_mean': np.mean([s['mel_mean'] for s in p_stats]),
                     'mel_std': np.mean([s['mel_std'] for s in p_stats]),
+                    'mel_min': np.min([s['mel_min'] for s in p_stats]),
+                    'mel_max': np.max([s['mel_max'] for s in p_stats]),
                 }
 
                 with open(os.path.join(self.ds.dir, 'stats.json'), 'w') as outfile:
@@ -418,6 +420,8 @@ class ProcessedDataset(Dataset):
             'energy_std':np.std(x['energy']).astype(float),
             'mel_mean':np.mean(x['mel']).astype(float),
             'mel_std':np.std(x['mel']).astype(float),
+            'mel_min':np.min(x['mel']).astype(float),
+            'mel_max':np.max(x['mel']).astype(float),
         }
 
     def create_phone2id(self):

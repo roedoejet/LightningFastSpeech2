@@ -158,18 +158,18 @@ class ConvMelGenerator(nn.Module):
         return out
 
 class StartGenBlock(nn.Module):
-    def __init__(self, in_c, out_c, nc=1):
+    def __init__(self, in_c, out_c, shape, nc=1):
         super(StartGenBlock, self).__init__()
 
         self.main = nn.Sequential(
             nn.ConvTranspose2d(in_c,out_c,5,1,0,bias=True),
-            #nn.GroupNorm(1, out_c),
+            nn.LayerNorm((out_c, shape, shape)),
             nn.ReLU(True),
         )
 
         self.second = nn.Sequential(
             nn.Conv2d(out_c + 1,out_c,3,1,1,bias=True),
-            #nn.GroupNorm(1, out_c),
+            nn.LayerNorm((out_c, shape, shape)),
             nn.LeakyReLU(0.2, inplace=True),
         )
 
@@ -181,8 +181,8 @@ class StartGenBlock(nn.Module):
     def forward(self, inputs, conditional):
         activations = self.main(inputs)
         x = torch.cat([
-            activations,
             conditional,
+            activations,
         ], dim=1)
         out_act = self.second(x)
         out_img = self.out_conv(torch.cat([
@@ -192,14 +192,17 @@ class StartGenBlock(nn.Module):
         return out_act, out_img
 
 class GenBlock(nn.Module):
-    def __init__(self, in_c, out_c, nc=1, scale=2):
+    def __init__(self, in_c, out_c, shape, nc=1, scale=2):
         super(GenBlock, self).__init__()
 
         self.upsample = nn.Upsample(scale_factor=scale, mode='bilinear')
 
         self.main = nn.Sequential(
             nn.Conv2d(in_c,out_c,3,1,1,bias=True),
-            #nn.GroupNorm(1, out_c),
+            nn.LayerNorm((out_c, shape, shape)),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(out_c,out_c,3,1,1,bias=True),
+            nn.LayerNorm((out_c, shape, shape)),
             nn.LeakyReLU(0.2, inplace=True),
         )
         self.out_conv = nn.Sequential(
@@ -211,8 +214,8 @@ class GenBlock(nn.Module):
         activations = self.upsample(activations)
 
         x = torch.cat([
-            activations,
             conditional,
+            activations,
         ], dim=1)
 
         out_act = self.main(x)
@@ -228,11 +231,11 @@ class Conv2dMelGenerator(nn.Module):
         super(Conv2dMelGenerator, self).__init__()
         
         self.blocks = nn.ModuleList([
-            StartGenBlock(noise, ngf * 8), # -> ndf * 8 x 5 x 5
-            GenBlock(ngf * 8 + nc, ngf * 4), # -> ndf * 4 x 10 x 10
-            GenBlock(ngf * 4 + nc, ngf * 2), # -> ndf *2 x 20 x 20
-            GenBlock(ngf * 2 + nc, ngf), # -> ndf x 40 x 40
-            GenBlock(ngf + nc, 1), # -> 1 x 80 x 80
+            StartGenBlock(noise, ngf * 8, 5), # -> ndf * 8 x 5 x 5
+            GenBlock(ngf * 8 + nc, ngf * 8, 10), # -> ndf * 4 x 10 x 10
+            GenBlock(ngf * 8 + nc, ngf * 4, 20), # -> ndf *2 x 20 x 20
+            GenBlock(ngf * 4 + nc, ngf * 4, 40), # -> ndf x 40 x 40
+            GenBlock(ngf * 4 + nc, 1, 80), # -> 1 x 80 x 80
         ])
 
         # Initializing all neural network weights.
@@ -242,7 +245,7 @@ class Conv2dMelGenerator(nn.Module):
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.normal_(m.weight.data, 0.0, 0.02)
-            elif isinstance(m, nn.GroupNorm):
+            elif isinstance(m, nn.LayerNorm):
                 nn.init.normal_(m.weight, 1.0, 0.02)
                 m.weight.data *= 0.1
                 if m.bias is not None:

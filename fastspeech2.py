@@ -86,18 +86,18 @@ class FastSpeech2Loss(nn.Module):
                     postnet_pred, mel_tgt-mel_blur, self.l1_loss, tgt_mask, unsqueeze=True
                 )
             elif self.postnet_type == 'gan':
-                real_output = torch.cat([p['real_output'] for p in postnet_pred], dim=0)
-                real_label =  torch.cat([p['real_label'] for p in postnet_pred], dim=0)
-                fake_output_d = torch.cat([p['fake_output_d'] for p in postnet_pred], dim=0)
-                fake_label =  torch.cat([p['fake_label'] for p in postnet_pred], dim=0)
-                fake_output_g = torch.cat([p['fake_output_g'] for p in postnet_pred], dim=0)
+                real_output = torch.flatten(torch.cat([p['real_output'] for p in postnet_pred], dim=0))
+                real_label =  torch.flatten(torch.cat([p['real_label'] for p in postnet_pred], dim=0))
+                fake_output_d = torch.flatten(torch.cat([p['fake_output_d'] for p in postnet_pred], dim=0))
+                fake_label =  torch.flatten(torch.cat([p['fake_label'] for p in postnet_pred], dim=0))
+                fake_output_g = torch.flatten(torch.cat([p['fake_output_g'] for p in postnet_pred], dim=0))
                 #print(real_output.shape, real_label.shape)
-                d_loss_real = self.bce_loss(real_output, real_label)
+                d_loss_real = self.mse_loss(real_output, real_label)
                 #print(fake_output_d.shape, fake_label.shape)
-                d_loss_fake = self.bce_loss(fake_output_d, fake_label)
+                d_loss_fake = self.mse_loss(fake_output_d, fake_label)
                 d_loss = (d_loss_real + d_loss_fake)
                 #print(fake_output_g.shape, real_label.shape)
-                g_loss = self.bce_loss(fake_output_g, real_label)
+                g_loss = self.mse_loss(fake_output_g, real_label)
 
                 
         if config["dataset"].get("variance_level") == "frame":
@@ -156,7 +156,7 @@ class FastSpeech2(pl.LightningModule):
         self.has_blur = config["model"].getboolean("blur")
         train_path = config["train"].get("train_path")
         valid_path = config["train"].get("valid_path")
-        train_ud = UnprocessedDataset(train_path, dvector=self.has_dvector, blur=self.has_blur)
+        train_ud = UnprocessedDataset(train_path, dvector=self.has_dvector, blur=self.has_blur) # max_entries=3300
         valid_ud = UnprocessedDataset(valid_path, dvector=self.has_dvector, blur=self.has_blur)
         self.train_ds = ProcessedDataset(
             unprocessed_ds=train_ud,
@@ -271,6 +271,16 @@ class FastSpeech2(pl.LightningModule):
         ]
         self.size_list = lambda x: [s(x) for s in size_transforms]
 
+    def _normalize_mel(self, mel):
+        mel_min = self.train_ds.stats['mel_min']
+        mel_max = self.train_ds.stats['mel_max']
+        return ((mel - mel_min) / (mel_max - mel_min)) * 2 - 1
+
+    def _denormalize_mel(self, mel):
+        mel_min = self.train_ds.stats['mel_min']
+        mel_max = self.train_ds.stats['mel_max']
+        return ((mel + 1) / 2) * (mel_max - mel_min) + mel_min
+
     def forward(self, phones, speakers, pitch=None, energy=None, duration=None, mel=None):
         phones = phones.to(self.device)
         speakers = speakers.to(self.device)
@@ -349,21 +359,18 @@ class FastSpeech2(pl.LightningModule):
                         patch = conditional_item[-width:].unsqueeze(0)
                         conditionals.append(self.size_list(patch))
 
-                    mel_mean = self.train_ds.stats['mel_mean']
-                    mel_std = self.train_ds.stats['mel_std']
-
                     conditionals = [torch.stack([c[i] for c in conditionals]).to(self.device) for i in range(len(self.sizes))]
-                    conditionals = [(c - mel_mean) / mel_std for c in conditionals]
+                    conditionals = [self._normalize_mel(c) for c in conditionals]
 
                     if mel is not None:
                         targets = [torch.stack([t[i] for t in targets]).to(self.device) for i in range(len(self.sizes))]
-                        targets = [(t - mel_mean) / mel_std for t in targets]
+                        targets = [self._normalize_mel(t) for t in targets]
                         real_output = self.postnet_disc(targets, conditionals)
                     else:
                         real_output = None
 
                     # Train with fake.
-                    fake = [f for c, f in zip(conditionals, self.postnet_gen(noise, conditionals))] # conditionals + 
+                    fake = [f + c for c, f in zip(conditionals, self.postnet_gen(noise, conditionals))] # conditionals + 
 
                     fake_output_d = self.postnet_disc([f.detach() for f in fake], conditionals)
                     # update G network
@@ -371,9 +378,9 @@ class FastSpeech2(pl.LightningModule):
 
                     if mel is None:
                         for j in range(out_len):
-                            final_output[i][width*j:width*(j+1)] = (fake[0].detach().clone().squeeze()[j]) * mel_std + mel_mean
+                            final_output[i][width*j:width*(j+1)] = self._denormalize_mel(fake[0].detach().clone().squeeze()[j])
                         if out_mod != 0:
-                            final_output[i][-out_mod:] = (fake[0].detach().clone().squeeze(1)[-1][-out_mod:]) * mel_std + mel_mean
+                            final_output[i][-out_mod:] = self._denormalize_mel(fake[0].detach().clone().squeeze(1)[-1][-out_mod:])
                     else:
                         final_output = None
 
@@ -393,10 +400,11 @@ class FastSpeech2(pl.LightningModule):
                     if real_output is not None:
                         result['fake'] = fake
                         result['real'] = targets
+                        result['conditionals'] = conditionals
                         if not self.training:
                             result['accuracy'] = accuracy_score(
                                 [1]*len(real_output)+[0]*len(fake_output_d),
-                                [int(x) for x in list((real_output.cpu()*(1/0.9)).round())]+[int(x) for x in list((fake_output_d.cpu()*(1/0.9)).round())]
+                                [int(x) for x in list((real_output.cpu()*(1/0.9)).numpy().round())]+[int(x) for x in list((fake_output_d.cpu()*(1/0.9)).numpy().round())]
                             )
 
                     postnet_output.append(result)
@@ -533,10 +541,14 @@ class FastSpeech2(pl.LightningModule):
                         for k in range(len(self.sizes)):
                             real_img = postnet_output[0]['real'][k][j]
                             fake_img = postnet_output[0]['fake'][k][j]
+                            cond_img = postnet_output[0]['conditionals'][k][j]
+                            tgt_img = real_img - cond_img
+                            pred_img = fake_img - cond_img
                             # print(f'gan_examples_{self.sizes[k]}x{self.sizes[k]}')
                             # print('real', real_img.mean(), real_img.std(), real_img.min(), real_img.max())
                             # print('fake', fake_img.mean(), fake_img.std(), fake_img.min(), fake_img.max())
-                            wandb.log({f'gan_examples_{self.sizes[k]}x{self.sizes[k]}': wandb.Image(make_grid([real_img, fake_img]))})
+                            wandb.log({f'gan_examples_{self.sizes[k]}x{self.sizes[k]}': wandb.Image(make_grid([real_img, fake_img, cond_img, tgt_img, pred_img]))})
+                    break
                 if i >= 10:
                     break
                 mel = final_mels[i][~tgt_mask[i]].cpu()

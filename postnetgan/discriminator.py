@@ -144,13 +144,17 @@ class ConvMelDiscriminator(nn.Module):
         return out
 
 class StartDisBlock(nn.Module):
-    def __init__(self, in_c, out_c):
+    def __init__(self, in_c, out_c, shape):
         super(StartDisBlock, self).__init__()
 
         self.main = nn.Sequential(
-            nn.Conv2d(in_c,out_c,3,2,1,bias=True),
-            nn.GroupNorm(1, out_c),
-            nn.LeakyReLU(0.2, inplace=True)
+            nn.Conv2d(in_c,out_c,3,1,1,bias=True),
+            nn.LayerNorm((out_c, shape, shape)),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(out_c,out_c,3,1,1,bias=True),
+            nn.LayerNorm((out_c, shape, shape)),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.AvgPool2d(2,2),
         )
 
     def forward(self, inputs, conditional):
@@ -162,34 +166,38 @@ class StartDisBlock(nn.Module):
         return out
 
 class DisBlock(nn.Module):
-    def __init__(self, in_c, out_c):
+    def __init__(self, in_c, out_c, shape):
         super(DisBlock, self).__init__()
 
         self.main = nn.Sequential(
-            nn.Conv2d(in_c,out_c,3,2,1,bias=True),
-            nn.GroupNorm(1, out_c),
-            nn.LeakyReLU(0.2, inplace=True)
+            nn.Conv2d(in_c,out_c,3,1,1,bias=True),
+            nn.LayerNorm((out_c, shape, shape)),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Conv2d(out_c,out_c,3,1,1,bias=True),
+            nn.LayerNorm((out_c, shape, shape)),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.AvgPool2d(2,2),
         )
     
-    def forward(self, activations, conditional, inputs):
+    def forward(self, activations, images, conditional):
         x = torch.cat([
-            activations,
+            images,
             conditional,
-            inputs
+            activations,
         ], dim=1)
         out = self.main(x)
         return out
 
 class EndDisBlock(nn.Module):
-    def __init__(self, in_c, out_c):
+    def __init__(self, in_c, out_c, shape):
         super(EndDisBlock, self).__init__()
 
         self.main = nn.Sequential(
             nn.Conv2d(in_c,out_c,3,1,1,bias=True),
-            nn.GroupNorm(1, out_c),
+            nn.LayerNorm((out_c, shape, shape)),
             nn.LeakyReLU(0.2, inplace=True),
             nn.Conv2d(out_c,out_c,4,2,0,bias=True),
-            nn.GroupNorm(1, out_c),
+            nn.LayerNorm((out_c, 1, 1)),
             nn.LeakyReLU(0.2, inplace=True),
         )
 
@@ -198,11 +206,11 @@ class EndDisBlock(nn.Module):
             nn.Sigmoid()
         )
     
-    def forward(self, activations, conditional, inputs):
+    def forward(self, activations, images, conditional):
         x = torch.cat([
-            activations,
+            images,
             conditional,
-            inputs
+            activations,
         ], dim=1)
         out = self.main(x)
         out = self.fc(out.squeeze())
@@ -213,11 +221,11 @@ class Conv2dMelDiscriminator(nn.Module):
         super(Conv2dMelDiscriminator, self).__init__()
 
         self.blocks = nn.ModuleList([
-            StartDisBlock(nc * 2, ndf), # -> ndf x 40 x 40
-            DisBlock(ndf + nc * 2, ndf * 2), # -> ndf*2 x 20 x 20
-            DisBlock(ndf * 2 + nc * 2, ndf * 4), # -> ndf*4 x 10 x 10
-            DisBlock(ndf * 4 + nc * 2, ndf * 8), # -> ndf*8 x 5 x 5
-            EndDisBlock(ndf * 8 + nc * 2, ndf * 8), # -> 1 x 1 x 1
+            StartDisBlock(nc * 2, ndf * 4, 80), # -> ndf x 40 x 40
+            DisBlock(ndf * 4 + nc * 2, ndf * 4, 40), # -> ndf*2 x 20 x 20
+            DisBlock(ndf * 4 + nc * 2, ndf * 8, 20), # -> ndf*4 x 10 x 10
+            DisBlock(ndf * 8 + nc * 2, ndf * 8, 10), # -> ndf*8 x 5 x 5
+            EndDisBlock(ndf * 8 + nc * 2, ndf * 8, 5), # -> 1 x 1 x 1
         ])
 
         # Initializing all neural network weights.
@@ -227,7 +235,7 @@ class Conv2dMelDiscriminator(nn.Module):
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 nn.init.normal_(m.weight.data, 0.0, 0.02)
-            elif isinstance(m, nn.GroupNorm):
+            elif isinstance(m, nn.LayerNorm):
                 nn.init.normal_(m.weight, 1.0, 0.02)
                 m.weight.data *= 0.1
                 if m.bias is not None:
